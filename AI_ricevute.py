@@ -745,63 +745,71 @@ class ReceiptAnalysisChain:
         self.logger = processor
         api_openai = ProcessingWorker().load_or_get_api_key(self)
 
+        from langchain_openai import ChatOpenAI
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
 
-
-        # Inizializzazione del modello
         self.llm = ChatOpenAI(
             temperature=0,
             api_key=api_openai,
             model="gpt-4o-mini"
         )
 
-        # Output parser
         output_parser = StrOutputParser()
 
-        # Definizione dei template usando la nuova sintassi
+        # Template per l'analisi dello scontrino
         self.analysis_prompt = ChatPromptTemplate.from_template("""
-            Analizza il seguente testo estratto da uno scontrino e identifica:
-            1. Data
-            2. Importo totale
-            3. Valuta
-            4. Nome esercente
-            5. Località
+            Analizza il seguente testo estratto da uno scontrino e restituisci un JSON con questa struttura esatta:
+            {{
+                "data": "YYYY-MM-DD",
+                "importo": number,
+                "valuta": "codice valuta a 3 lettere",
+                "esercente": "nome dell'esercente",
+                "luogo": "località"
+            }}
 
-            Testo: {text}
+            Non includere commenti o spiegazioni, solo il JSON.
 
-            Rispondi in formato JSON strutturato.
+            Testo da analizzare: {text}
         """)
         self.analysis_chain = self.analysis_prompt | self.llm | output_parser
 
+        # Template per la validazione
         self.validation_prompt = ChatPromptTemplate.from_template("""
-            Verifica la validità dei seguenti dati estratti:
-            {json}
+            Verifica i seguenti dati e restituisci un JSON con questa struttura esatta:
+            {{
+                "data_valida": boolean,
+                "importo_valido": boolean,
+                "valuta_valida": boolean,
+                "correzioni": {{
+                    "data": "YYYY-MM-DD oppure null se non serve correzione",
+                    "importo": number oppure null se non serve correzione,
+                    "valuta": "codice valuta oppure null se non serve correzione"
+                }},
+                "messaggi": ["lista di messaggi sulle correzioni necessarie"]
+            }}
 
-            Controlla:
-            1. La data è in un formato valido?
-            2. L'importo è un numero ragionevole?
-            3. La valuta è riconosciuta?
+            Non includere commenti o spiegazioni, solo il JSON.
 
-            Suggerisci correzioni se necessario.
+            Dati da validare: {json}
         """)
         self.validation_chain = self.validation_prompt | self.llm | output_parser
 
+        # Template per la categorizzazione
         self.categorization_prompt = ChatPromptTemplate.from_template("""
-            Analizza questa descrizione e categorizza la spesa:
-            {description}
+            Analizza questa descrizione e restituisci un JSON con questa struttura esatta:
+            {{
+                "categoria": "una tra: Cibo e Ristorazione, Trasporti, Shopping, Servizi, Altro",
+                "confidenza": number,
+                "sottocategoria": "descrizione più specifica",
+                "tags": ["lista", "di", "parole", "chiave"]
+            }}
 
-            Categorie possibili:
-            - Cibo e Ristorazione
-            - Trasporti
-            - Shopping
-            - Servizi
-            - Altro
+            Non includere commenti o spiegazioni, solo il JSON.
 
-            Fornisci anche un livello di confidenza (0-100%).
+            Descrizione da analizzare: {description}
         """)
         self.categorization_chain = self.categorization_prompt | self.llm | output_parser
-
-        # Non abbiamo più bisogno della memory qui poiché non stiamo
-        # mantenendo uno stato della conversazione
 
     def get_conversion_info(self, currency: str) -> dict:
         """Ottiene informazioni sulla conversione utilizzata."""
@@ -1150,6 +1158,10 @@ class ReceiptProcessor(QMainWindow):
     def handle_results(self, data: dict, file_path: str):
         """Versione sincrona di handle_results con correzione parsing dati"""
         try:
+
+            # Parsing del JSON dalla risposta
+            if isinstance(data, str):
+                data = json.loads(data)
             # Estrai i dati dal JSON, gestendo nomi di campo diversi
             raw_date = data.get("data") or data.get("date", "N/A")
 
