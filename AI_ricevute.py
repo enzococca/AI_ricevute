@@ -70,7 +70,7 @@ import sys
 import time
 import json
 import base64
-from typing import TypedDict, Dict, Any, Optional
+
 
 import requests
 
@@ -83,16 +83,20 @@ from PyQt5.QtWidgets import (
 
 # Registra il tipo in modo alternativo
 QMetaType.type("QTextCursor")
-from PyQt5.QtCore import QThread, pyqtSignal, QObject
+from PyQt5.QtCore import QThread, pyqtSignal
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from fpdf import FPDF
 import pandas as pd
 import openai
-from langchain.prompts import PromptTemplate
-from langchain_openai import OpenAI
-from langchain.memory import ConversationSummaryMemory
+# Aggiornamento alla nuova sintassi di LangChain
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+#moduli forex
 from forex_python.converter import CurrencyRates
+import arabic_reshaper
+from bidi.algorithm import get_display
 # Directory and file paths
 WATCH_DIR = "scontrini"
 EXCEL_FILE = "pagamenti.xlsx"
@@ -352,7 +356,7 @@ class ExpenseAnalysisAgent:
 
     def analyze_expenses(self) -> str:
         """Analizza le spese e determina la categoria di spesa principale."""
-        import pandas as pd
+
         try:
             # Leggi lo storico delle spese dal file Excel
             df = pd.read_excel(self.excel_file)
@@ -367,7 +371,8 @@ class ExpenseAnalysisAgent:
             highest_expense_category = total_by_category.idxmax()
             highest_expense_value = total_by_category.max()
 
-            return f"La categoria di spesa principale è '{highest_expense_category}' con una spesa totale di {highest_expense_value:.2f} EUR."
+            return (f"La categoria di spesa principale è '{highest_expense_category}' con una spesa totale di "
+                    f"{highest_expense_value:.2f} EUR.")
         except Exception as e:
             print(f"Errore nell'analisi delle spese: {str(e)}")
             return "Errore nell'analisi delle spese."
@@ -380,31 +385,46 @@ class DateFormatterAgent:
     def format_date(date_str: str) -> str:
         """Formatta la data nel formato AAAA-MM-GG."""
         from datetime import datetime
+        import re
+
         try:
             # Se è già un oggetto datetime, formattalo direttamente
             if isinstance(date_str, datetime):
                 return date_str.strftime("%Y-%m-%d")
 
+            # Pulisci la stringa da eventuali caratteri non necessari
+            date_str = str(date_str).strip()
+
             # Lista di formati da provare
             date_formats = [
-                "%d/%m/%y",      # 01/12/24
-                "%d/%m/%Y",      # 01/12/2024
-                "%d-%m-%y",      # 01-12-24
-                "%d-%m-%Y",      # 01-12-2024
-                "%Y/%m/%d",      # 2024/12/01
-                "%y/%m/%d",      # 24/12/01
-                "%m/%d/%y",      # 12/01/24
-                "%m/%d/%Y",      # 12/01/2024
-                "%b %d, %y",     # Dec 02, 24
-                "%B %d, %y",     # December 02, 24
-                "%b %d, %Y",     # Dec 02, 2024
-                "%B %d, %Y",     # December 02, 2024
+                # Formati con mese in lettere
+                "%d-%b-%y",  # 16-Dec-24
+                "%d-%B-%y",  # 16-December-24
+                "%d-%b-%Y",  # 16-Dec-2024
+                "%d-%B-%Y",  # 16-December-2024
+                "%d %b %y",  # 16 Dec 24
+                "%d %B %y",  # 16 December 24
+                "%d %b %Y",  # 16 Dec 2024
+                "%d %B %Y",  # 16 December 2024
+                "%b %d %Y",  # Dec 16 2024
+                "%B %d %Y",  # December 16 2024
+                "%b %d %y",  # Dec 16 24
+                "%B %d %y",  # December 16 24
+                # Formati numerici standard
+                "%d/%m/%Y",  # 01/12/2024
+                "%d-%m-%Y",  # 01-12-2024
+                "%Y/%m/%d",  # 2024/12/01
+                "%Y-%m-%d",  # 2024-12-01
+                "%d/%m/%y",  # 01/12/24
+                "%d-%m-%y",  # 01-12-24
+                "%y/%m/%d",  # 24/12/01
+                "%y-%m-%d",  # 24-12-01
             ]
 
-            # Se è una stringa, prova i vari formati
+            # Prova prima a parsare con i formati standard
             for fmt in date_formats:
                 try:
-                    date_obj = datetime.strptime(str(date_str), fmt)
+                    date_obj = datetime.strptime(date_str, fmt)
                     # Se l'anno è a due cifre, aggiungi 2000
                     if date_obj.year < 100:
                         date_obj = date_obj.replace(year=date_obj.year + 2000)
@@ -412,7 +432,59 @@ class DateFormatterAgent:
                 except ValueError:
                     continue
 
-            raise ValueError(f"Formato data sconosciuto: {date_str}")
+            # Se nessun formato standard funziona, prova a estrarre i numeri e il mese
+            # Pattern per trovare mesi in inglese
+            month_pattern = r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|may|june|july|august|september|october|november|december)'
+            month_match = re.search(month_pattern, date_str.lower())
+
+            if month_match:
+                # Mappa dei mesi in inglese
+                month_map = {
+                    'jan': 1, 'january': 1,
+                    'feb': 2, 'february': 2,
+                    'mar': 3, 'march': 3,
+                    'apr': 4, 'april': 4,
+                    'may': 5,
+                    'jun': 6, 'june': 6,
+                    'jul': 7, 'july': 7,
+                    'aug': 8, 'august': 8,
+                    'sep': 9, 'september': 9,
+                    'oct': 10, 'october': 10,
+                    'nov': 11, 'november': 11,
+                    'dec': 12, 'december': 12
+                }
+
+                numbers = re.findall(r'\d+', date_str)
+                if len(numbers) == 2:  # giorno e anno
+                    day = int(numbers[0])
+                    year = int(numbers[1])
+                    month = month_map[month_match.group(1)]
+
+                    # Gestisci anni a 2 cifre
+                    if year < 100:
+                        year += 2000
+
+                    # Verifica che i numeri siano validi
+                    if 1 <= day <= 31 and 1 <= month <= 12 and 2000 <= year <= 2100:
+                        return f"{year:04d}-{month:02d}-{day:02d}"
+
+            # Se ancora non funziona, prova a estrarre solo i numeri
+            numbers = re.findall(r'\d+', date_str)
+            if len(numbers) == 3:
+                day = int(numbers[0])
+                month = int(numbers[1])
+                year = int(numbers[2])
+
+                # Gestisci anni a 2 cifre
+                if year < 100:
+                    year += 2000
+
+                # Verifica che i numeri siano validi
+                if 1 <= day <= 31 and 1 <= month <= 12 and 2000 <= year <= 2100:
+                    return f"{year:04d}-{month:02d}-{day:02d}"
+
+            raise ValueError(f"Formato data non riconosciuto: {date_str}")
+
         except Exception as e:
             print(f"Errore nella formattazione della data: {str(e)}")
             return str(date_str)
@@ -667,19 +739,26 @@ class CurrencyConversionManager:
         except:
             return None, None
 
+
 class ReceiptAnalysisChain:
     def __init__(self, processor):
         self.logger = processor
-        api_openai=ProcessingWorker().load_or_get_api_key(self)
-        self.llm = OpenAI(temperature=0, api_key=api_openai)
+        api_openai = ProcessingWorker().load_or_get_api_key(self)
 
-        llm_name = self.llm
-        self.memory = ConversationSummaryMemory(llm=llm_name)
 
-        # Definizione dei template e delle catene usando la nuova sintassi
-        self.analysis_prompt = PromptTemplate(
-            input_variables=["text"],
-            template="""
+
+        # Inizializzazione del modello
+        self.llm = ChatOpenAI(
+            temperature=0,
+            api_key=api_openai,
+            model="gpt-4o-mini"
+        )
+
+        # Output parser
+        output_parser = StrOutputParser()
+
+        # Definizione dei template usando la nuova sintassi
+        self.analysis_prompt = ChatPromptTemplate.from_template("""
             Analizza il seguente testo estratto da uno scontrino e identifica:
             1. Data
             2. Importo totale
@@ -690,13 +769,10 @@ class ReceiptAnalysisChain:
             Testo: {text}
 
             Rispondi in formato JSON strutturato.
-            """
-        )
-        self.analysis_chain = self.analysis_prompt | self.llm
+        """)
+        self.analysis_chain = self.analysis_prompt | self.llm | output_parser
 
-        self.validation_prompt = PromptTemplate(
-            input_variables=["json"],
-            template="""
+        self.validation_prompt = ChatPromptTemplate.from_template("""
             Verifica la validità dei seguenti dati estratti:
             {json}
 
@@ -706,13 +782,10 @@ class ReceiptAnalysisChain:
             3. La valuta è riconosciuta?
 
             Suggerisci correzioni se necessario.
-            """
-        )
-        self.validation_chain = self.validation_prompt | self.llm
+        """)
+        self.validation_chain = self.validation_prompt | self.llm | output_parser
 
-        self.categorization_prompt = PromptTemplate(
-            input_variables=["description"],
-            template="""
+        self.categorization_prompt = ChatPromptTemplate.from_template("""
             Analizza questa descrizione e categorizza la spesa:
             {description}
 
@@ -724,17 +797,19 @@ class ReceiptAnalysisChain:
             - Altro
 
             Fornisci anche un livello di confidenza (0-100%).
-            """
-        )
-        self.categorization_chain = self.categorization_prompt | self.llm
+        """)
+        self.categorization_chain = self.categorization_prompt | self.llm | output_parser
+
+        # Non abbiamo più bisogno della memory qui poiché non stiamo
+        # mantenendo uno stato della conversazione
 
     def get_conversion_info(self, currency: str) -> dict:
         """Ottiene informazioni sulla conversione utilizzata."""
         return {
             "valuta": currency,
-            "tasso": self.current_rate,
-            "fonte": self.rate_source,
-            "timestamp": self.rate_timestamp
+            "tasso": getattr(self, 'current_rate', None),
+            "fonte": getattr(self, 'rate_source', None),
+            "timestamp": getattr(self, 'rate_timestamp', None)
         }
 
 
@@ -843,15 +918,6 @@ class OCRAgent:
 
 
 
-
-
-class ReceiptState(TypedDict):
-    """Type for the state of receipt processing."""
-    image_text: str
-    extracted_data: Optional[Dict[str, Any]]
-    error: Optional[str]
-
-
 class ReceiptProcessor(QMainWindow):
     # Aggiungi un segnale personalizzato per il logging
     log_signal = pyqtSignal(str)
@@ -860,10 +926,12 @@ class ReceiptProcessor(QMainWindow):
         self.setWindowTitle("Analisi Scontrini con IA")
         self.setGeometry(100, 100, 1200, 800)
         self.setup_ui()
-        # Inizializza gli agenti e l'UI
+        # Inizializza gli agenti
         self.date_formatter = DateFormatterAgent()
         self.currency_conversion_manager = CurrencyConversionManager(self)
         self.receipt_analysis_chain = ReceiptAnalysisChain(self)
+        self.file_agent = FileAgent(WATCH_DIR)  # Aggiunto FileAgent
+        self.ocr_agent = OCRAgent()  # Aggiunto OCRAgent
 
         # Connetti il segnale di log al metodo di logging
         self.log_signal.connect(self.log_action)
@@ -923,64 +991,101 @@ class ReceiptProcessor(QMainWindow):
         self.excel_button.clicked.connect(self.save_to_excel)
         layout.addWidget(self.excel_button)
 
-
-
     def analyze_expenses(self):
-        """Analizza le spese e stampa la categoria con maggior spesa."""
+        """Analisi completa delle spese usando ExpenseAnalysisAgent."""
         try:
-            # Costruisci il percorso assoluto al file Excel
             report_dir = os.path.join(os.getcwd(), "Reports")
             excel_file_path = os.path.join(report_dir, "pagamenti.xlsx")
 
             # Crea e utilizza l'agente di analisi delle spese
             expense_agent = ExpenseAnalysisAgent(excel_file_path)
-            category_summary = expense_agent.analyze_expenses()
-            print(category_summary)
 
-            # Aggiorna lo stato o genera una notifica per l'utente
-            self.status_label.setText(category_summary)
+            # Ottieni l'analisi delle spese
+            analysis_result = expense_agent.analyze_expenses()
+
+            # Aggiorna l'interfaccia con i risultati
+            self.status_label.setText(analysis_result)
+            self.log_action(f"Analisi spese completata: {analysis_result}")
+
+            # Aggiorna il widget di log con informazioni dettagliate
+            if os.path.exists(excel_file_path):
+                df = pd.read_excel(excel_file_path)
+                total_spent = df['Importo (EUR)'].sum()
+                num_transactions = len(df)
+                self.log_action(f"Totale spese: {total_spent:.2f} EUR")
+                self.log_action(f"Numero totale transazioni: {num_transactions}")
 
         except Exception as e:
-            self.status_label.setText(f"Errore nell'analisi delle spese: {str(e)}")
-            print(f"Errore nell'analisi delle spese: {str(e)}")
-
+            self.handle_error(f"Errore nell'analisi delle spese: {str(e)}")
 
     def process_and_move_file(self, original_path: str) -> str:
         """
-        Processa il file, lo rinomina e lo sposta nella cartella scontrini.
-        Returns: nuovo percorso del file
+        Processa il file, controlla duplicati e ottimizza l'immagine.
         """
         try:
+            # Controlla se è un duplicato usando FileAgent
+            if self.file_agent.is_duplicate(original_path):
+                self.log_action(f"File duplicato rilevato: {original_path}")
+                return None
+
+            # Ottimizza l'immagine usando OCRAgent
+            optimized_path = self.ocr_agent.optimize_image(original_path)
+            self.log_action(f"Immagine ottimizzata: {optimized_path}")
+
             # Ottieni la data di creazione del file
-            creation_time = os.path.getctime(original_path)
+            creation_time = os.path.getctime(optimized_path)
             date_str = time.strftime('%Y%m%d_%H%M%S', time.localtime(creation_time))
 
             # Crea il nuovo nome file
-            file_ext = os.path.splitext(original_path)[1].lower()
+            file_ext = os.path.splitext(optimized_path)[1].lower()
             new_filename = f"Scontrino_{date_str}{file_ext}"
             new_path = os.path.join(WATCH_DIR, new_filename)
 
-            # Copia il file nella cartella scontrini
+            # Sposta il file
             import shutil
-            shutil.copy2(original_path, new_path)
+            shutil.copy2(optimized_path, new_path)
+
+            # Pulisci i file temporanei se necessario
+            if optimized_path != original_path:
+                os.remove(optimized_path)
 
             return new_path
 
         except Exception as e:
-            self.handle_error(f"Errore nello spostamento del file: {str(e)}")
+            self.handle_error(f"Errore nel processamento del file: {str(e)}")
             return original_path
 
     def update_table(self):
-        """Aggiorna la tabella UI con i dati correnti."""
+        """Aggiorna la tabella UI con i dati correnti e formattazione corretta dei numeri."""
         try:
             self.table.setRowCount(len(self.data))
             for row, item in enumerate(self.data):
+                # Data
                 self.table.setItem(row, 0, QTableWidgetItem(str(item["Data"])))
-                self.table.setItem(row, 1, QTableWidgetItem(f"{float(item['Importo']):.2f}"))
+
+                # Importo originale
+                try:
+                    importo = float(item["Importo"])
+                    importo_str = f"{importo:.3f}" if importo % 1 != 0 else f"{int(importo)}"
+                    self.table.setItem(row, 1, QTableWidgetItem(importo_str))
+                except (ValueError, TypeError):
+                    self.table.setItem(row, 1, QTableWidgetItem("0.000"))
+
+                # Valuta
                 self.table.setItem(row, 2, QTableWidgetItem(item["Valuta"]))
-                self.table.setItem(row, 3, QTableWidgetItem(f"{float(item['Importo (EUR)']):.2f}"))
+
+                # Importo EUR
+                try:
+                    importo_eur = float(item["Importo (EUR)"])
+                    importo_eur_str = f"{importo_eur:.3f}" if importo_eur % 1 != 0 else f"{int(importo_eur)}"
+                    self.table.setItem(row, 3, QTableWidgetItem(importo_eur_str))
+                except (ValueError, TypeError):
+                    self.table.setItem(row, 3, QTableWidgetItem("0.000"))
+
+                # Descrizione e File
                 self.table.setItem(row, 4, QTableWidgetItem(item["Descrizione"]))
                 self.table.setItem(row, 5, QTableWidgetItem(item["File"]))
+
         except Exception as e:
             self.handle_error(f"Errore nell'aggiornamento della tabella: {str(e)}")
 
@@ -1000,16 +1105,19 @@ class ReceiptProcessor(QMainWindow):
 
             # Ottieni il tasso di conversione
             rate = conversion_rates.get(currency, 1)  # Default a 1 se valuta non trovata
-            converted = float(amount) * rate
 
-            return round(converted, 2)
+            # Assicurati che amount sia un float
+            amount = float(str(amount).replace(',', '.')) if isinstance(amount, str) else float(amount)
+
+            converted = amount * rate
+            return round(converted, 3)
 
         except Exception as e:
             self.handle_error(f"Errore nella conversione valuta: {str(e)}")
-            return float(amount)  # Ritorna l'importo originale in caso di errore
+            return 0.000  # Ritorna zero in caso di errore
 
     def load_receipts(self):
-        """Gestisce il caricamento degli scontrini."""
+        """Gestisce il caricamento degli scontrini con controllo duplicati e ottimizzazione."""
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Seleziona Scontrini",
@@ -1023,30 +1131,59 @@ class ReceiptProcessor(QMainWindow):
         self.status_label.setText("Elaborazione in corso...")
 
         for file_path in files:
-            worker = ProcessingWorker(self)
-            worker.setup(file_path, self.receipt_analysis_chain)
+            # Processa e sposta il file
+            processed_path = self.process_and_move_file(file_path)
+            if processed_path is None:
+                continue  # Salta i duplicati
 
-            # Connetti tutti i segnali
-            worker.finished.connect(lambda data, fp=file_path: self.handle_results(data, fp))
+            # Crea e configura il worker per l'analisi
+            worker = ProcessingWorker(self)
+            worker.setup(processed_path, self.receipt_analysis_chain)
+
+            worker.finished.connect(lambda data, fp=processed_path: self.handle_results(data, fp))
             worker.error.connect(self.handle_error)
             worker.progress.connect(lambda msg: self.status_label.setText(msg))
-            worker.log_message.connect(self.log_action)  # Connetti il nuovo segnale di log
+            worker.log_message.connect(self.log_action)
 
             worker.start()
 
     def handle_results(self, data: dict, file_path: str):
-        """Versione sincrona di handle_results"""
+        """Versione sincrona di handle_results con correzione parsing dati"""
         try:
-            # Formatta la data dello scontrino usando l'agente
-            raw_date = data.get("data", "N/A")
-            formatted_date = self.date_formatter.format_date(raw_date)
+            # Estrai i dati dal JSON, gestendo nomi di campo diversi
+            raw_date = data.get("data") or data.get("date", "N/A")
+
+            # Formatta la data con l'agente
+            try:
+                formatted_date = self.date_formatter.format_date(raw_date)
+                self.log_action(f"Data formattata: {formatted_date}")
+            except Exception as e:
+                self.log_action(f"Errore nella formattazione della data: {str(e)}")
+                formatted_date = raw_date
 
             # Standardizza la valuta
             valuta = data.get("valuta", "").upper().replace("RO", "OMR")
-            importo = data.get("importo", 0)
 
-            # Converti in EUR
-            importo_eur = self.convert_to_eur(importo)
+            # Gestione corretta dei numeri
+            try:
+                importo = data.get("importo") or data.get("importo_totale", 0)
+                if isinstance(importo, str):
+                    importo = float(importo.replace(',', '.'))
+                else:
+                    importo = float(importo)
+                importo_eur = self.convert_to_eur(importo, valuta)
+            except (ValueError, TypeError) as e:
+                self.log_action(f"Errore nella conversione dell'importo: {str(e)}")
+                importo = 0.000
+                importo_eur = 0.000
+
+            # Gestione della descrizione
+            esercente = data.get("esercente") or data.get("nome_esercente", "")
+            luogo = data.get("luogo") or data.get("localita", "")
+            descrizione = f"{esercente}"
+            if luogo:
+                descrizione += f" - {luogo}"
+            descrizione = descrizione.strip(" -")
 
             # Crea una singola riga per questo scontrino
             row_data = {
@@ -1054,9 +1191,11 @@ class ReceiptProcessor(QMainWindow):
                 "Importo": importo,
                 "Valuta": valuta,
                 "Importo (EUR)": importo_eur,
-                "Descrizione": f"{data.get('esercente', '')} - {data.get('luogo', '')}".strip(' -'),
+                "Descrizione": descrizione,
                 "File": os.path.basename(file_path)
             }
+
+            self.log_action(f"Dati processati: {row_data}")
             self.data.append(row_data)
 
             # Aggiorna la tabella e salva in Excel
@@ -1083,29 +1222,22 @@ class ReceiptProcessor(QMainWindow):
             # Prepara i dati per l'Excel
             formatted_data = []
             for item in self.data:
-                # Estrai la categoria dal risultato della categorizzazione
-                categoria = "Altro"  # Valore di default
-                if "categoria" in item:
-                    # Se la categoria è in formato stringa JSON, la parsa
-                    try:
-                        if isinstance(item["categoria"], str):
-                            categoria_data = json.loads(item["categoria"])
-                            if "text" in categoria_data:
-                                categoria = categoria_data["text"].split("\n")[0]  # Prende la prima riga
-                            else:
-                                categoria = categoria_data
-                        else:
-                            categoria = item["categoria"]
-                    except:
-                        categoria = str(item["categoria"])
+                # Converti esplicitamente i valori numerici
+                try:
+                    importo_originale = float(str(item['Importo']).replace(',', '.'))
+                    importo_eur = float(str(item['Importo (EUR)']).replace(',', '.'))
+                except ValueError as e:
+                    self.logger.log_action(f"Errore nella conversione dell'importo: {str(e)}")
+                    importo_originale = 0.0
+                    importo_eur = 0.0
 
                 formatted_item = {
                     'Data': item['Data'],
-                    'Importo Originale': float(item['Importo']),
+                    'Importo Originale': importo_originale,
                     'Valuta': item['Valuta'],
-                    'Importo (EUR)': float(item['Importo (EUR)']),
+                    'Importo (EUR)': importo_eur,
                     'Descrizione': item['Descrizione'],
-                    'Categoria': categoria,  # Aggiunto il campo categoria
+                    'Categoria': item.get('categoria', 'Altro'),
                     'File': item['File'],
                     'Percorso Completo': os.path.join(WATCH_DIR, item['File'])
                 }
@@ -1117,7 +1249,11 @@ class ReceiptProcessor(QMainWindow):
             # Se il file esiste, carica i dati esistenti e aggiungi i nuovi
             if os.path.exists(excel_path):
                 existing_df = pd.read_excel(excel_path)
-                # Rimuovi eventuali duplicati basati su Data, Importo e Descrizione
+                # Converti le colonne numeriche in float
+                existing_df['Importo Originale'] = pd.to_numeric(existing_df['Importo Originale'], errors='coerce')
+                existing_df['Importo (EUR)'] = pd.to_numeric(existing_df['Importo (EUR)'], errors='coerce')
+
+                # Rimuovi eventuali duplicati
                 combined_df = pd.concat([existing_df, df])
                 combined_df = combined_df.drop_duplicates(
                     subset=['Data', 'Importo Originale', 'Descrizione'],
@@ -1159,89 +1295,104 @@ class ReceiptProcessor(QMainWindow):
             traceback.print_exc()
 
     def export_to_pdf(self):
+        """Esporta i dati in PDF con supporto Unicode usando FPDF2."""
+        from fpdf import FPDF
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+
         class PDF(FPDF):
             def __init__(self):
-                super().__init__(orientation='L')  # Orizzontale per più spazio
+                super().__init__(orientation='L', unit='mm', format='A4')
                 self.col_widths = {
                     "Data": 25,
                     "Importo": 25,
                     "Valuta": 15,
                     "EUR": 25,
-                    "Descrizione": 95,  # Aumentato per testi lunghi
-                    "Categoria": 35,  # Spazio per la categoria
-                    "File": 50  # Ridotto leggermente
+                    "Descrizione": 95,
+                    "Categoria": 35,
+                    "File": 50
                 }
+                # Imposta il font predefinito
+                self.add_font("NotoSans", fname="fonts/NotoSans-Regular.ttf")
+                self.add_font("NotoSans", fname="fonts/NotoSans-Bold.ttf", style="B")
                 self.set_auto_page_break(auto=True, margin=15)
-                self.set_font("Arial", size=10)
-                self.header_printed = False
 
             def header(self):
-                if not self.header_printed and self.page_no() == 1:
-                    # Titolo solo sulla prima pagina
-                    self.set_font("Arial", "B", 16)
-                    self.cell(0, 10, "Report Scontrini", 0, 1, "C")
-                    self.set_font("Arial", "I", 10)
-                    self.cell(0, 5, f"Generato il: {time.strftime('%d/%m/%Y %H:%M:%S')}", 0, 1, "R")
-                    self.ln(5)
-                    self.header_printed = True
+                self.set_font("NotoSans", "B", 16)
+                self.cell(0, 10, "Report Scontrini", align="C")
+                self.ln()
+                self.set_font("NotoSans", size=10)
+                self.cell(0, 5, f"Generato il: {time.strftime('%d/%m/%Y %H:%M:%S')}", align="R")
+                self.ln(10)
 
-                # Intestazione tabella su ogni pagina
-                self.set_font("Arial", "B", 10)
+                # Intestazione tabella
+                self.set_font("NotoSans", "B", 10)
                 self.set_fill_color(230, 230, 230)
                 x_pos = 10
                 for header, width in self.col_widths.items():
                     self.rect(x_pos, self.get_y(), width, 8, "DF")
                     self.set_xy(x_pos, self.get_y())
-                    self.cell(width, 8, header, 0, 0, "C")
+                    self.cell(width, 8, header, align="C")
                     x_pos += width
                 self.ln(8)
 
-            def add_row(self, data):
-                """Aggiunge una riga con gestione migliore dello spazio."""
-                self.set_font("Arial", "", 9)
+            def footer(self):
+                self.set_y(-15)
+                self.set_font("NotoSans", size=8)
+                self.cell(0, 10, f'Pagina {self.page_no()}', align="C")
 
-                # Calcola l'altezza necessaria per il testo più lungo
+            def add_row(self, data):
+                self.set_font("NotoSans", size=9)
+
+                # Calcola l'altezza necessaria
                 max_height = 6
                 desc_lines = []
 
-                # Dividi il testo della descrizione in linee
+                def process_text(text):
+                    try:
+                        text = arabic_reshaper.reshape(str(text))
+                        text = get_display(text)
+                        return text
+                    except:
+                        return str(text)
+
+                # Prepara il testo della descrizione
                 if "Descrizione" in data:
-                    desc_lines = self.multi_cell_planning(data["Descrizione"],
-                                                          self.col_widths["Descrizione"])
+                    desc_text = process_text(data["Descrizione"])
+                    desc_lines = self.multi_cell_planning(desc_text,
+                                                          self.col_widths["Descrizione"] - 2)
                     max_height = max(len(desc_lines) * 6, max_height)
 
                 # Stampa le celle
                 x_start = 10
                 y_start = self.get_y()
+                cell_height = max_height
 
                 for key, width in self.col_widths.items():
                     self.set_xy(x_start, y_start)
                     content = str(data.get(key, ""))
 
                     if key in ["Descrizione", "File"]:
-                        # Multi-line per testi lunghi
-                        current_lines = self.multi_cell_planning(content, width)
-                        for i, line in enumerate(current_lines):
+                        content = process_text(content)
+                        lines = self.multi_cell_planning(content, width - 2)
+                        for i, line in enumerate(lines):
                             self.set_xy(x_start, y_start + (i * 6))
-                            self.cell(width, 6, line, 1, 0, 'L')
+                            self.cell(width, 6, line, border=1, align="L")
                     else:
-                        # Celle normali con altezza dinamica
-                        self.cell(width, max_height, content, 1, 0, 'C')
-
+                        self.cell(width, cell_height, process_text(content),
+                                  border=1, align="C")
                     x_start += width
 
-                self.ln(max_height)
+                self.ln(cell_height)
 
             def multi_cell_planning(self, text, width):
-                """Pianifica come dividere il testo in linee."""
                 lines = []
-                text = str(text)
                 running_line = ""
                 words = text.split()
 
                 for word in words:
                     test_line = f"{running_line} {word}".strip()
-                    if self.get_string_width(test_line) <= (width - 4):
+                    if self.get_string_width(test_line) <= width:
                         running_line = test_line
                     else:
                         if running_line:
@@ -1254,6 +1405,27 @@ class ReceiptProcessor(QMainWindow):
                 return lines if lines else [text]
 
         try:
+            # Verifica se la cartella fonts esiste, altrimenti creala
+            if not os.path.exists('fonts'):
+                os.makedirs('fonts')
+
+            # Verifica se il font è presente, altrimenti scaricalo
+            font_path = "fonts/NotoSans-Regular.ttf"
+            bold_font_path = "fonts/NotoSans-Bold.ttf"
+
+            if not (os.path.exists(font_path) and os.path.exists(bold_font_path)):
+                self.status_label.setText("Scaricamento font in corso...")
+                import urllib.request
+
+                # URLs per i font Noto Sans (questi sono esempi, usa URLs corrette)
+                font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
+                bold_font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Bold.ttf"
+
+                urllib.request.urlretrieve(font_url, font_path)
+                urllib.request.urlretrieve(bold_font_url, bold_font_path)
+
+                self.status_label.setText("Font scaricati con successo")
+
             # Leggi i dati e prepara il PDF
             data = self.read_excel_data()
             self.data = self.prepare_data(data)
@@ -1263,12 +1435,12 @@ class ReceiptProcessor(QMainWindow):
 
             # Aggiungi le righe
             for item in self.data:
-                if pdf.get_y() > 180:  # Controlla lo spazio rimanente sulla pagina
+                if pdf.get_y() > 180:
                     pdf.add_page()
 
                 row_data = {
                     "Data": str(item.get("Data", "")),
-                    "Importo": f"{float(item.get('Importo Originale', 0)):.2f}",
+                    "Importo": f"{float(item.get('Importo Originale', 0)):.3f}",
                     "Valuta": str(item.get("Valuta", "")),
                     "EUR": f"{float(item.get('Importo (EUR)', 0)):.2f}",
                     "Descrizione": str(item.get("Descrizione", "")),
@@ -1277,36 +1449,25 @@ class ReceiptProcessor(QMainWindow):
                 }
                 pdf.add_row(row_data)
 
-            # Aggiungi riepilogo su nuova pagina
+            # Aggiungi riepilogo
             pdf.add_page()
-            pdf.set_font("Arial", "B", 12)
-            pdf.cell(0, 10, "Riepilogo", 0, 1, "L")
+            pdf.set_font("NotoSans", "B", 12)
+            pdf.cell(0, 10, "Riepilogo", align="L")
+            pdf.ln()
 
-            # Calcola e mostra totali
             total_eur = sum(float(item.get("Importo (EUR)", 0)) for item in self.data)
-            pdf.set_font("Arial", "", 10)
-            pdf.cell(0, 8, f"Totale spese: {total_eur:.2f} EUR", 0, 1, "L")
-            pdf.cell(0, 8, f"Numero scontrini elaborati: {len(self.data)}", 0, 1, "L")
+            pdf.set_font("NotoSans", size=10)
+            pdf.cell(0, 8, f"Totale spese: {total_eur:.2f} EUR", align="L")
+            pdf.ln()
+            pdf.cell(0, 8, f"Numero scontrini elaborati: {len(self.data)}", align="L")
+            pdf.ln()
 
-            # Totali per categoria
-            categoria_totals = {}
-            for item in self.data:
-                categoria = item.get("Categoria", "Non specificata")
-                importo = float(item.get("Importo (EUR)", 0))
-                categoria_totals[categoria] = categoria_totals.get(categoria, 0) + importo
-
-            pdf.ln(5)
-            pdf.set_font("Arial", "B", 11)
-            pdf.cell(0, 8, "Totali per Categoria:", 0, 1, "L")
-            pdf.set_font("Arial", "", 10)
-            for categoria, totale in categoria_totals.items():
-                pdf.cell(0, 6, f"{categoria}: {totale:.2f} EUR", 0, 1, "L")
-
-            # Salva il file
+            # Salva il PDF
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             pdf_filename = f"report_scontrini_{timestamp}.pdf"
             pdf_path = os.path.join("Reports", pdf_filename)
             pdf.output(pdf_path)
+
             self.status_label.setText(f"PDF esportato con successo: {pdf_filename}")
 
         except Exception as e:
