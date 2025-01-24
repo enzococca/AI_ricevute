@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (QMainWindow, QVBoxLayout, QPushButton, QTableWidget
     QTableWidgetItem, QFileDialog, QLabel, QHeaderView, QWidget, QTextEdit)
 from PyQt5.QtCore import pyqtSignal, pyqtSlot
 
+
 from ..agents.expense_analyzer import ExpenseAnalysisAgent
 from ..services.receipt_watcher import ReceiptWatcher
 from ..workers.processing import ProcessingWorker
@@ -46,6 +47,7 @@ class ReceiptProcessor(QMainWindow):
         self.data = []
         self.current_workers = []
         self.start_watching()
+        self.receipt_analysis_chain = ReceiptAnalysisChain(self)
 
     @pyqtSlot(str)
     def log_action(self, message: str):
@@ -70,10 +72,11 @@ class ReceiptProcessor(QMainWindow):
 
         # Tabella risultati
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
             "Data", "Importo", "Valuta",
-            "Importo (EUR)", "Descrizione", "File"
+            "Importo (EUR)", "Descrizione","Categoria","Sottocategoria",
+            "File"
         ])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Stretch)
@@ -162,35 +165,17 @@ class ReceiptProcessor(QMainWindow):
             return original_path
 
     def update_table(self):
-        """Aggiorna la tabella UI con i dati correnti e formattazione corretta dei numeri."""
         try:
             self.table.setRowCount(len(self.data))
             for row, item in enumerate(self.data):
-                # Data
                 self.table.setItem(row, 0, QTableWidgetItem(str(item["Data"])))
-
-                # Importo originale
-                try:
-                    importo = float(item["Importo"])
-                    importo_str = f"{importo:.3f}" if importo % 1 != 0 else f"{int(importo)}"
-                    self.table.setItem(row, 1, QTableWidgetItem(importo_str))
-                except (ValueError, TypeError):
-                    self.table.setItem(row, 1, QTableWidgetItem("0.000"))
-
-                # Valuta
+                self.table.setItem(row, 1, QTableWidgetItem(f"{float(item['Importo']):.3f}"))
                 self.table.setItem(row, 2, QTableWidgetItem(item["Valuta"]))
-
-                # Importo EUR
-                try:
-                    importo_eur = float(item["Importo (EUR)"])
-                    importo_eur_str = f"{importo_eur:.3f}" if importo_eur % 1 != 0 else f"{int(importo_eur)}"
-                    self.table.setItem(row, 3, QTableWidgetItem(importo_eur_str))
-                except (ValueError, TypeError):
-                    self.table.setItem(row, 3, QTableWidgetItem("0.000"))
-
-                # Descrizione e File
+                self.table.setItem(row, 3, QTableWidgetItem(f"{float(item['Importo (EUR)']):.3f}"))
                 self.table.setItem(row, 4, QTableWidgetItem(item["Descrizione"]))
-                self.table.setItem(row, 5, QTableWidgetItem(item["File"]))
+                self.table.setItem(row, 5, QTableWidgetItem(item["Categoria"]))
+                self.table.setItem(row, 6, QTableWidgetItem(item["Sottocategoria"]))
+                self.table.setItem(row, 7, QTableWidgetItem(item["File"]))
 
         except Exception as e:
             self.handle_error(f"Errore nell'aggiornamento della tabella: {str(e)}")
@@ -254,148 +239,131 @@ class ReceiptProcessor(QMainWindow):
             worker.start()
 
     def handle_results(self, data: dict, file_path: str):
-        """Versione sincrona di handle_results con correzione parsing dati"""
         try:
-
-            # Parsing del JSON dalla risposta
             if isinstance(data, str):
                 data = json.loads(data)
-            # Estrai i dati dal JSON, gestendo nomi di campo diversi
+
+            # Estrazione dati base
             raw_date = data.get("data") or data.get("date", "N/A")
-
-            # Formatta la data con l'agente
-            try:
-                formatted_date = self.date_formatter.format_date(raw_date)
-                self.log_action(f"Data formattata: {formatted_date}")
-            except Exception as e:
-                self.log_action(f"Errore nella formattazione della data: {str(e)}")
-                formatted_date = raw_date
-
-            # Standardizza la valuta
+            formatted_date = self.date_formatter.format_date(raw_date)
             valuta = data.get("valuta", "").upper().replace("RO", "OMR")
 
-            # Gestione corretta dei numeri
+            # Gestione importi
             try:
-                importo = data.get("importo") or data.get("importo_totale", 0)
-                if isinstance(importo, str):
-                    importo = float(importo.replace(',', '.'))
-                else:
-                    importo = float(importo)
+                importo = float(str(data.get("importo", 0)).replace(',', '.'))
                 importo_eur = self.convert_to_eur(importo, valuta)
-            except (ValueError, TypeError) as e:
-                self.log_action(f"Errore nella conversione dell'importo: {str(e)}")
+            except (ValueError, TypeError):
                 importo = 0.000
                 importo_eur = 0.000
 
-            # Gestione della descrizione
-            esercente = data.get("esercente") or data.get("nome_esercente", "")
-            luogo = data.get("luogo") or data.get("localita", "")
-            descrizione = f"{esercente}"
-            if luogo:
-                descrizione += f" - {luogo}"
-            descrizione = descrizione.strip(" -")
+            # Gestione esercente e luogo
+            esercente = data.get("esercente", "")
+            luogo = data.get("luogo", "")
+            descrizione = f"{esercente} - {luogo}".strip(" -")
 
-            # Crea una singola riga per questo scontrino
+            # Estrazione categoria e sottocategoria
+            categoria = "Altro"
+            sottocategoria = ""
+            if "categorization" in data and isinstance(data["categorization"], dict):
+                cat_data = data["categorization"].get("categoria", {})
+                if isinstance(cat_data, dict):
+                    categoria = cat_data.get("categoria", "Altro")
+                    sottocategoria = cat_data.get("sottocategoria", "")
+
+            # Preparazione dati riga
             row_data = {
                 "Data": formatted_date,
                 "Importo": importo,
                 "Valuta": valuta,
                 "Importo (EUR)": importo_eur,
                 "Descrizione": descrizione,
+                "Categoria": categoria,
+                "Sottocategoria": sottocategoria,
                 "File": os.path.basename(file_path)
             }
 
             self.log_action(f"Dati processati: {row_data}")
             self.data.append(row_data)
-
-            # Aggiorna la tabella e salva in Excel
             self.update_table()
             self.save_to_excel()
-            self.status_label.setText(f"Elaborazione completata per {os.path.basename(file_path)}")
+
         except Exception as e:
             self.handle_error(f"Errore nell'elaborazione dei risultati: {str(e)}")
 
-        self.analyze_expenses()
+
 
     def handle_error(self, error_msg: str):
         self.status_label.setText(f"Errore: {error_msg}")
         print(f"Errore: {error_msg}")
 
     def save_to_excel(self):
-        """Salva i dati in un file Excel."""
         try:
-            # Crea la cartella Reports se non esiste
             reports_dir = os.path.join(os.getcwd(), "Reports")
             os.makedirs(reports_dir, exist_ok=True)
             excel_path = os.path.join(reports_dir, EXCEL_FILE)
 
-            # Prepara i dati per l'Excel
             formatted_data = []
             for item in self.data:
-                # Converti esplicitamente i valori numerici
                 try:
                     importo_originale = float(str(item['Importo']).replace(',', '.'))
                     importo_eur = float(str(item['Importo (EUR)']).replace(',', '.'))
                 except ValueError as e:
-                    self.logger.log_action(f"Errore nella conversione dell'importo: {str(e)}")
+                    self.logger.log_action(f"Errore conversione importo: {str(e)}")
                     importo_originale = 0.0
                     importo_eur = 0.0
+
+
 
                 formatted_item = {
                     'Data': item['Data'],
                     'Importo Originale': importo_originale,
                     'Valuta': item['Valuta'],
                     'Importo (EUR)': importo_eur,
-                    'Descrizione': item['Descrizione'],
-                    'Categoria': item.get('categoria', 'Altro'),
-                    'File': item['File'],
-                    'Percorso Completo': os.path.join(WATCH_DIR, item['File'])
+                    'Descrizione': item.get('Descrizione', ''),
+                    'Categoria': item.get('Categoria', ''),
+                    'Sottocategoria': item.get('Sottocategoria', ''),
+
+                    'File': item['File']
                 }
                 formatted_data.append(formatted_item)
 
-            # Crea un DataFrame con i dati
             df = pd.DataFrame(formatted_data)
 
-            # Se il file esiste, carica i dati esistenti e aggiungi i nuovi
             if os.path.exists(excel_path):
                 existing_df = pd.read_excel(excel_path)
-                # Converti le colonne numeriche in float
                 existing_df['Importo Originale'] = pd.to_numeric(existing_df['Importo Originale'], errors='coerce')
                 existing_df['Importo (EUR)'] = pd.to_numeric(existing_df['Importo (EUR)'], errors='coerce')
 
-                # Rimuovi eventuali duplicati
                 combined_df = pd.concat([existing_df, df])
                 combined_df = combined_df.drop_duplicates(
-                    subset=['Data', 'Importo Originale', 'Descrizione'],
+                    subset=['Data', 'Importo Originale', 'Descrizione','Categoria','Sottocategoria'],
                     keep='last'
                 )
                 df = combined_df
 
-            # Formatta il DataFrame
             writer = pd.ExcelWriter(excel_path, engine='xlsxwriter')
             df.to_excel(writer, index=False, sheet_name='Scontrini')
 
-            # Ottieni il foglio di lavoro
             workbook = writer.book
             worksheet = writer.sheets['Scontrini']
 
-            # Definisci i formati
+            # Formati
             money_format = workbook.add_format({'num_format': '#,##0.00'})
             date_format = workbook.add_format({'num_format': 'dd/mm/yyyy'})
+            percent_format = workbook.add_format({'num_format': '0.00%'})
 
-            # Imposta la larghezza delle colonne e i formati
+            # Colonne
             worksheet.set_column('A:A', 15, date_format)  # Data
             worksheet.set_column('B:B', 15, money_format)  # Importo Originale
             worksheet.set_column('C:C', 10)  # Valuta
             worksheet.set_column('D:D', 15, money_format)  # Importo (EUR)
             worksheet.set_column('E:E', 40)  # Descrizione
             worksheet.set_column('F:F', 20)  # Categoria
-            worksheet.set_column('G:G', 30)  # File
-            worksheet.set_column('H:H', 50)  # Percorso Completo
+            worksheet.set_column('G:G', 25)  # Sottocategoria
+            worksheet.set_column('H:H', 25)  # file
 
-            # Salva il file
+
             writer.close()
-
             self.status_label.setText(f"Dati salvati in: {excel_path}")
 
         except Exception as e:
@@ -420,6 +388,7 @@ class ReceiptProcessor(QMainWindow):
                     "EUR": 25,
                     "Descrizione": 95,
                     "Categoria": 35,
+                    "Sottocategoria":35,
                     "File": 50
                 }
                 # Imposta il font predefinito

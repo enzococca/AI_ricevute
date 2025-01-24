@@ -2,7 +2,6 @@
 Automatically generated file from migration script.
 """
 
-
 from watchdog.events import FileSystemEventHandler
 
 from receipt_analyzer.src.workers.processing import ProcessingWorker
