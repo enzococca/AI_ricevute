@@ -1,18 +1,27 @@
 """
 Automatically generated file from migration script.
 """
+
 import json
 import re
 from typing import Dict, Any
-
 from PyQt5.QtWidgets import QInputDialog
 from aiohttp import ClientSession
-
 from receipt_analyzer.src.workers.processing import ProcessingWorker
 
-
 class ReceiptAnalysisChain:
+    """
+            Questa classe integra varie funzionalità di elaborazione utilizzando un bastone LLM
+            Pipeline per l'analisi del testo. Le catene implementate sono progettate per la ricezione
+            Attività di analisi, validazione e categorizzazione. I suggerimenti usano strutturati
+            Modelli per garantire formati di output coerenti in JSON. Questo facilita il
+            elaborazione e validazione di dati testuali estratti in modo efficiente, eseguiti in
+            Collaborazione con il modello GPT-4.0 di Openi. Ogni catena inizia con un suggerimento
+            Il modello, passa attraverso l'LLM e analizza il risultato in formati strutturati.
+    """
+
     def __init__(self, processor):
+
         self.logger = processor.log_signal.emit
         
         api_openai = ProcessingWorker().load_or_get_api_key(self)
@@ -22,8 +31,8 @@ class ReceiptAnalysisChain:
         from langchain_core.output_parsers import StrOutputParser
 
         self.llm = ChatOpenAI(
-            temperature=.0,
-            api_key=api_openai,
+            temperature=0,
+            api_key = api_openai,
             model="gpt-4o",
             streaming=True
         )
@@ -93,7 +102,8 @@ class ReceiptAnalysisChain:
             "timestamp": getattr(self, 'rate_timestamp', None)
         }
 
-    def validate_esercente_and_luogo(self, esercente: str, luogo: str) -> bool:
+    @staticmethod
+    def validate_esercente_and_luogo(esercente: str, luogo: str) -> bool:
         """
         Verifica se le informazioni su esercente e luogo sono sufficienti.
 
@@ -247,11 +257,9 @@ class ReceiptAnalysisChain:
         try:
             # Remove markdown code blocks
             cleaned = re.sub(r"```json\n|\n```", "", json_string).strip()
-
             # Parse and re-stringify to ensure valid JSON
             parsed = json.loads(cleaned)
             return json.dumps(parsed, ensure_ascii=False)
         except json.JSONDecodeError as e:
             self.logger(f"JSON cleaning error: {str(e)}, Input: {json_string}")
             raise ValueError(f"Invalid JSON after cleaning: {str(e)}")
-
