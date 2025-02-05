@@ -4,7 +4,9 @@ Automatically generated file from migration script.
 
 import time
 import json
+from datetime import datetime
 
+from PyQt5.QtGui import QTextCharFormat, QColor, QFont
 from watchdog.observers import Observer
 
 import pandas as pd
@@ -24,6 +26,61 @@ from ..agents.file_agent import FileAgent
 from ..agents.ocr_agent import OCRAgent
 from ..utils.config import *
 
+
+class ConsoleWidget(QWidget):
+    log_signal = pyqtSignal(str, str)  # message, level
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Console text widget
+        self.console = QTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setFont(QFont('Consolas', 10))
+        self.console.setStyleSheet("""
+            QTextEdit {
+                background-color: black;
+                color: white;
+                border: 1px solid #333;
+            }
+        """)
+        layout.addWidget(self.console)
+
+        # Configure text formats
+        self.formats = {
+            'error': self._create_format('red'),
+            'warning': self._create_format('yellow'),
+            'info': self._create_format('green'),
+            'timestamp': self._create_format('cyan')
+        }
+
+        # Connect signal
+        self.log_signal.connect(self._log_message)
+
+    def _create_format(self, color):
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        return fmt
+
+    def log(self, message, level='info'):
+        self.log_signal.emit(message, level)
+
+    def _log_message(self, message, level):
+        cursor = self.console.textCursor()
+        cursor.movePosition(cursor.End)
+
+        # Add timestamp
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        cursor.insertText(f"{timestamp} ", self.formats['timestamp'])
+
+        # Add message with level format
+        cursor.insertText(f"{message}\n", self.formats.get(level, self.formats['info']))
+
+        # Scroll to bottom
+        self.console.setTextCursor(cursor)
+        self.console.ensureCursorVisible()
 
 class ReceiptProcessor(QMainWindow):
     # Aggiungi un segnale personalizzato per il logging
@@ -53,7 +110,7 @@ class ReceiptProcessor(QMainWindow):
     def log_action(self, message: str):
         """Logga un'azione nella finestra dei log."""
         print(f"Logging message: {message}")
-        self.log_widget.append(message)
+        self.log_widget.log(message)
 
     def setup_ui(self):
         central_widget = QWidget()
@@ -82,8 +139,8 @@ class ReceiptProcessor(QMainWindow):
         header.setSectionResizeMode(QHeaderView.Stretch)
         layout.addWidget(self.table)
         # Widget per i log degli agenti
-        self.log_widget = QTextEdit(self)
-        self.log_widget.setReadOnly(True)
+        self.log_widget = ConsoleWidget()
+        #self.log_widget.setReadOnly(True)
 
 
 
